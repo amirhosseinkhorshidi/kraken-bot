@@ -16,6 +16,7 @@ import {
 } from "../../redis/conversationState.js";
 import { getTicketThread, setTicketThread } from "../../redis/ticketThreads.js";
 import { getCurrentOrderMessage, getStoreStatusMessage } from "../../utils/businessHours.js";
+import { bold, escapeHtml } from "../../utils/html.js";
 import { formatOrderMessage, type ItemType } from "../../utils/orderMessage.js";
 import { validateOrderNumber } from "../../utils/validators.js";
 import { verificationMenuButton, verificationOrderLabel } from "../../utils/verificationLabel.js";
@@ -75,9 +76,8 @@ function buildMainMenuKeyboard(verificationStatus: ReturnType<typeof getVerifica
     .success();
 }
 
-function buildBackToMainKeyboard(style: "success" | "danger" = "danger") {
-  const kb = new InlineKeyboard().text("منوی اصلی", "back_to_main");
-  return style === "success" ? kb.success() : kb.danger();
+function buildBackToMainKeyboard() {
+  return new InlineKeyboard().text("منوی اصلی", "back_to_main").success();
 }
 
 function buildItemSelectionKeyboard() {
@@ -199,15 +199,16 @@ async function submitOrder(
 
   const keyboard = new InlineKeyboard();
   if (verificationStatus !== "approved") {
-    keyboard
-      .text("تکمیل احراز هویت", `send_verification_reminder_${userId}_${orderNumber}`)
-      .row();
+    keyboard.text("تکمیل احراز هویت", `send_verification_reminder_${userId}_${orderNumber}`).row();
   }
   keyboard
     .text("رد", `reject_order_${userId}_${orderNumber}`)
     .text("تایید", `approve_order_${userId}_${orderNumber}`);
 
-  const sent = await ctx.api.sendMessage(config.groups.orders, message, { reply_markup: keyboard });
+  const sent = await ctx.api.sendMessage(config.groups.orders, message, {
+    parse_mode: "HTML",
+    reply_markup: keyboard,
+  });
   await registerAdminReplyTarget(config.groups.orders, sent.message_id, {
     type: "order",
     userId,
@@ -215,7 +216,7 @@ async function submitOrder(
     itemType,
   });
 
-  await ctx.reply(getCurrentOrderMessage(), { reply_markup: buildBackToMainKeyboard("success") });
+  await ctx.reply(getCurrentOrderMessage(), { reply_markup: buildBackToMainKeyboard() });
 }
 
 async function finalizeTf2Order(
@@ -320,17 +321,18 @@ async function handleTicketTextInput(
 
   await clearFlowState(userId);
 
-  const usernameDisplay = ctx.from?.username ? `@${ctx.from.username}` : "No Username";
+  const usernameDisplay = ctx.from?.username ? `@${escapeHtml(ctx.from.username)}` : "No Username";
   const message = [
-    "🎟️ تیکت جدید",
-    `📜 موضوع : ${TICKET_CATEGORY_LABEL[category]}`,
-    `👤 کاربر : ${userId} - ${usernameDisplay}`,
-    `⭐️ احراز هویت : ${verificationOrderLabel(getVerificationStatus(userId))}`,
+    `🎟️ ${bold("تیکت جدید")}`,
+    `📜 ${bold("موضوع")} : ${TICKET_CATEGORY_LABEL[category]}`,
+    `👤 ${bold("اطلاعات کاربر")} : ${userId} - ${usernameDisplay}`,
+    `⭐️ ${bold("احراز هویت")} : ${verificationOrderLabel(getVerificationStatus(userId))}`,
     "",
-    ctx.message.text,
+    escapeHtml(ctx.message.text),
   ].join("\n");
 
   const sent = await ctx.api.sendMessage(config.groups.tickets, message, {
+    parse_mode: "HTML",
     reply_markup: new InlineKeyboard().text("برای ارسال پیام ریپلای کنید", "disabled"),
   });
   await registerAdminReplyTarget(config.groups.tickets, sent.message_id, {
@@ -365,8 +367,9 @@ async function handleTicketReplyInput(
   try {
     const forwarded = await ctx.api.sendMessage(
       config.groups.tickets,
-      `🎟️ جواب تیکت\n👤 کاربر : ${userId}\n\n${ctx.message.text}`,
+      `🎟️ ${bold("جواب تیکت")}\n👤 ${bold("اطلاعات کاربر")} : ${userId}\n\n${escapeHtml(ctx.message.text)}`,
       {
+        parse_mode: "HTML",
         reply_parameters: { message_id: ticketMessageId },
         reply_markup: new InlineKeyboard().text("برای ارسال پیام ریپلای کنید", "disabled"),
       },
@@ -569,11 +572,26 @@ export function setupUserHandlers(bot: Bot): void {
 
   // --- Ticket flow ---
 
-  bot.callbackQuery(["send_ticket", "create_support_ticket"], async (ctx) => {
+  // From the main menu: the menu message itself turns into the prompt.
+  bot.callbackQuery("send_ticket", async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(TICKET_CATEGORY_PROMPT, {
       reply_markup: buildTicketCategoryKeyboard(),
     });
+  });
+
+  // From an order-delivery message ("ارسال تیکت" under the gift-card codes / TF2 confirmation):
+  // send a new message instead of editing, so the delivered codes stay in the chat as the user's
+  // own record of the purchase. Only the button is swapped out, to stop a second tap from
+  // stacking up another category prompt.
+  bot.callbackQuery("create_support_ticket", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(TICKET_CATEGORY_PROMPT, { reply_markup: buildTicketCategoryKeyboard() });
+    await ctx
+      .editMessageReplyMarkup({
+        reply_markup: new InlineKeyboard().text("در حال ثبت تیکت", "disabled"),
+      })
+      .catch(() => undefined);
   });
 
   bot.callbackQuery("back_to_ticket_category", async (ctx) => {
@@ -714,10 +732,14 @@ export function setupUserHandlers(bot: Bot): void {
     if (ctx.chat.type !== "private") return;
 
     const isAdmin = ctx.from.id === config.adminId;
+    // Admins get a "back" button into their own panel, which keeps the danger styling every
+    // other back/cancel button uses; users get the green main-menu button.
+    const keyboard = new InlineKeyboard().text(
+      isAdmin ? "بازگشت" : "منوی اصلی",
+      isAdmin ? "back_to_admin_menu" : "back_to_main",
+    );
     await ctx.reply("خطا در پردازش! از منوی زیر ادامه بدید", {
-      reply_markup: new InlineKeyboard()
-        .text(isAdmin ? "بازگشت" : "منوی اصلی", isAdmin ? "back_to_admin_menu" : "back_to_main")
-        .danger(),
+      reply_markup: isAdmin ? keyboard.danger() : keyboard.success(),
     });
   });
 }

@@ -27,6 +27,7 @@ import {
   setVerificationStep,
   updateVerificationDraft,
 } from "../../redis/verificationState.js";
+import { bold, escapeHtml } from "../../utils/html.js";
 import {
   validateOtpCode,
   validatePersianName,
@@ -263,20 +264,21 @@ async function handlePhotoUpload(ctx: Context): Promise<void> {
   }
 
   await ctx.reply("احراز هویت شما در صف تایید قرار گرفت پس از تایید به شما اطلاع داده میشود.", {
-    reply_markup: new InlineKeyboard().text("منوی اصلی", "back_to_main").danger(),
+    reply_markup: new InlineKeyboard().text("منوی اصلی", "back_to_main").success(),
   });
 
-  const usernameDisplay = ctx.from?.username ? `@${ctx.from.username}` : "No Username";
+  const usernameDisplay = ctx.from?.username ? `@${escapeHtml(ctx.from.username)}` : "No Username";
   const caption = [
-    `👤کاربر ${userId} - ${usernameDisplay}`,
-    "نام و نام خانوادگی :",
-    draft.fullName,
-    "شماره تلفن همراه :",
-    draft.phoneNumber,
+    `👤 ${bold("اطلاعات کاربر")} : ${userId} - ${usernameDisplay}`,
+    `${bold("نام و نام خانوادگی")} :`,
+    escapeHtml(draft.fullName),
+    `${bold("شماره تلفن همراه")} :`,
+    escapeHtml(draft.phoneNumber),
   ].join("\n");
 
   const sent = await ctx.api.sendPhoto(config.groups.verification, largestPhoto.file_id, {
     caption,
+    parse_mode: "HTML",
     reply_markup: new InlineKeyboard()
       .text("برای ارسال دلیل رد، ریپلای کنید", "disabled")
       .row()
@@ -303,7 +305,9 @@ export async function rejectVerificationWithReason(
   deleteVerification(userId);
   logger.info({ userId, reasonText }, "Verification rejected");
   await ctx.api
-    .sendMessage(userId, `احراز هویت شما رد شد\nعلت رد: ${reasonText}`)
+    .sendMessage(userId, `${bold("احراز هویت شما رد شد")}\nعلت رد: ${escapeHtml(reasonText)}`, {
+      parse_mode: "HTML",
+    })
     .catch(() => undefined);
   await ctx.api
     .deleteMessage(config.groups.verification, verificationMessageId)
@@ -401,7 +405,9 @@ export function setupVerificationHandlers(bot: Bot): void {
     await ctx.answerCallbackQuery();
     await ctx.deleteMessage().catch(() => undefined);
     await ctx.api
-      .sendMessage(userId, "احراز هویت شما رد شد. مجددا تلاش کنید.")
+      .sendMessage(userId, `${bold("احراز هویت شما رد شد")}. مجددا تلاش کنید.`, {
+        parse_mode: "HTML",
+      })
       .catch(() => undefined);
   });
 

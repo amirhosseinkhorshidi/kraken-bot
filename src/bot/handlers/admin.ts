@@ -8,11 +8,15 @@ import { logger } from "../../logger.js";
 import { clearAdminState, getAdminState, setAdminState } from "../../redis/adminPanelState.js";
 import { getAdminReplyTarget } from "../../redis/adminReplyMap.js";
 import { getCurrentOrderMessage, isWithinBusinessHours } from "../../utils/businessHours.js";
+import { bold, escapeHtml } from "../../utils/html.js";
 import { toEnglishDigits } from "../../utils/persianDigits.js";
 import { verificationOrderLabel } from "../../utils/verificationLabel.js";
 import { rejectVerificationWithReason } from "./verification.js";
 
 const ADMIN_MENU_TEXT = "پنل مدیریت فروشگاه کراکن";
+
+/** Closing line on both order-delivery messages (gift card codes and TF2 keys). */
+const SUPPORT_NOTE = "در صورت بروز هرگونه مشکل، از طریق ثبت تیکت، موضوع را با ما در میان بگذارید.";
 
 function buildAdminMenuKeyboard() {
   return new InlineKeyboard()
@@ -32,10 +36,6 @@ function backToAdminMenuKeyboard() {
 function parseUserId(text: string): number | null {
   const normalized = toEnglishDigits(text.trim());
   return /^\d+$/.test(normalized) ? Number(normalized) : null;
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function parseGiftCodeReply(text: string): { codes: string[]; description: string } {
@@ -64,8 +64,15 @@ async function handleSearchVerification(ctx: Context): Promise<void> {
   }
   const status = verification.status === "approved" ? "approved" : "pending";
   await ctx.reply(
-    `نام: ${verification.full_name}\nشماره موبایل: ${verification.phone_number}\nوضعیت: ${verificationOrderLabel(status)}`,
-    { reply_markup: new InlineKeyboard().text("حذف احراز هویت", `delete_verification_${userId}`) },
+    [
+      `<b>نام</b> : ${escapeHtml(verification.full_name)}`,
+      `<b>شماره موبایل</b> : ${escapeHtml(verification.phone_number)}`,
+      `<b>وضعیت</b> : ${verificationOrderLabel(status)}`,
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("حذف احراز هویت", `delete_verification_${userId}`),
+    },
   );
 }
 
@@ -251,7 +258,7 @@ export function setupAdminHandlers(bot: Bot): void {
       await ctx.api
         .sendMessage(
           userId,
-          `آیتم خریداری‌شده با شماره سفارش ${orderNumber} ارسال گردید.\n\nدر صورت بروز هرگونه مشکل، از طریق ثبت تیکت با ما در ارتباط باشید.`,
+          `آیتم خریداری‌شده با شماره سفارش ${orderNumber} ارسال گردید.\n\n${SUPPORT_NOTE}`,
           { reply_markup: new InlineKeyboard().text("ارسال تیکت", "create_support_ticket") },
         )
         .catch(() => undefined);
@@ -363,19 +370,22 @@ export function setupAdminHandlers(bot: Bot): void {
       const { codes, description } = parseGiftCodeReply(ctx.message.text);
       if (codes.length === 0) return;
 
+      // One code stays on the label line; several are listed underneath it, one per line, with
+      // no blank lines anywhere in the block.
       const codesBlock =
         codes.length === 1
-          ? `Code : <code>${escapeHtml(codes[0]!)}</code>`
-          : `Code : \n\n${codes.map((code) => `<code>${escapeHtml(code)}</code>`).join("\n")}`;
-      const message = [
-        `گیفت کارت خریداری شده شما با شماره سفارش ${target.orderNumber}`,
-        "",
+          ? `${bold("Code")} : <code>${escapeHtml(codes[0]!)}</code>`
+          : [`${bold("Code")} :`, ...codes.map((code) => `<code>${escapeHtml(code)}</code>`)].join(
+              "\n",
+            );
+      const lines = [
+        `گیفت کارت خریداری شده شما با شماره سفارش ${bold(escapeHtml(target.orderNumber))}`,
         codesBlock,
-        "",
-        `Description : ${escapeHtml(description)}`,
-        "",
-        "در صورت بروز هرگونه مشکل، از طریق ثبت تیکت با ما در ارتباط باشید.",
-      ].join("\n");
+      ];
+      // A one-line admin reply is codes-only — skip the label rather than printing it empty.
+      if (description) lines.push(`${bold("Description")} : ${escapeHtml(description)}`);
+      lines.push("", SUPPORT_NOTE);
+      const message = lines.join("\n");
 
       await ctx.api
         .sendMessage(target.userId, message, {
